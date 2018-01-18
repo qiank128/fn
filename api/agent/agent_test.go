@@ -602,6 +602,8 @@ func TestPipesAreClear(t *testing.T) {
 	if rid != callI.Model().ID {
 		t.Fatalf("body from second call was not what we wanted. boo. got wrong id: %v wanted: %v", rid, callI.Model().ID)
 	}
+
+	// TODO we need to make this test fail if 2 containers launch, too!
 }
 
 type delayReader struct {

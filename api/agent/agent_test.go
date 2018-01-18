@@ -530,7 +530,7 @@ func TestPipesAreClear(t *testing.T) {
 
 	// read this body after 5s (after call times out)
 	bodOne := `{"echoContent":"yodawg"}`
-	delayBodyOne := &delayReader{inny: strings.NewReader(bodOne), delay: 1 * time.Second}
+	delayBodyOne := &delayReader{inny: strings.NewReader(bodOne), delay: 5 * time.Second}
 
 	req, err := http.NewRequest("GET", call.URL, delayBodyOne)
 	if err != nil {

@@ -717,7 +717,8 @@ func (a *agent) runHot(ctxArg context.Context, call *call, tok ResourceToken) {
 	if err != nil {
 		errC <- err
 	} else if res.Error() != nil {
-		errC <- res.Error()
+		err = res.Error()
+		errC <- err
 	}
 
 	logger.WithError(err).Info("hot function terminated")

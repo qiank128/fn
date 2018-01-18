@@ -377,7 +377,6 @@ func (a *agent) hotLauncher(ctx context.Context, callObj *call) {
 
 // waitHot pings and waits for a hot container from the slot queue
 func (a *agent) waitHot(ctx context.Context, call *call) (Slot, error) {
-
 	ctxDequeuer, cancelDequeuer := context.WithCancel(ctx)
 	defer cancelDequeuer()
 	ch := call.slots.startDequeuer(ctxDequeuer)
@@ -829,8 +828,8 @@ type ghostReader struct {
 }
 
 func (g *ghostReader) swap(r io.Reader) {
-	fmt.Printf("SWAP READER %T %p \n", r, r)
 	g.cond.L.Lock()
+	fmt.Printf("SWAP READER %p %T %p \n", g, r, r)
 	g.inner = r
 	g.cond.L.Unlock()
 	g.cond.Broadcast()
@@ -846,6 +845,7 @@ func (g *ghostReader) Close() {
 func (g *ghostReader) Read(b []byte) (int, error) {
 	// wait for a real reader
 	g.cond.L.Lock()
+	fmt.Printf("READ READER %p %T %p \n", g, g.inner, g.inner)
 	for {
 		if g.closed { // check this first
 			g.cond.L.Unlock()

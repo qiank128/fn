@@ -526,18 +526,18 @@ func TestPipesAreClear(t *testing.T) {
 	// grab a buffer so we can read what gets written to this guy
 	// use same output for both, to make sure we don't see the first response in there.
 	// TODO shouldn't we make 2 and then check both after the 2nd completes instead of intermingling?
-	var outtie bytes.Buffer
+	var outOne bytes.Buffer
 
 	// read this body after 5s (after call times out)
 	bodOne := `{"echoContent":"yodawg"}`
-	delayBodyOne := &delayReader{inny: strings.NewReader(bodOne), delay: 5 * time.Second}
+	delayBodyOne := &delayReader{inny: strings.NewReader(bodOne), delay: 1 * time.Second}
 
 	req, err := http.NewRequest("GET", call.URL, delayBodyOne)
 	if err != nil {
 		t.Fatal("unexpected error building request", err)
 	}
 
-	callI, err := a.GetCall(FromRequest(call.AppName, call.Path, req), WithWriter(&outtie))
+	callI, err := a.GetCall(FromRequest(call.AppName, call.Path, req), WithWriter(&outOne))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,7 +567,8 @@ func TestPipesAreClear(t *testing.T) {
 		t.Fatal("unexpected error building request", err)
 	}
 
-	callI, err = a.GetCall(FromRequest(call.AppName, call.Path, req), WithWriter(&outtie))
+	var outTwo bytes.Buffer
+	callI, err = a.GetCall(FromRequest(call.AppName, call.Path, req), WithWriter(&outTwo))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +584,7 @@ func TestPipesAreClear(t *testing.T) {
 	}
 
 	// we're using http format so this will have written a whole http request
-	res, err := http.ReadResponse(bufio.NewReader(&outtie), nil)
+	res, err := http.ReadResponse(bufio.NewReader(&outTwo), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

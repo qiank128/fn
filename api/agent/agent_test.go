@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -426,7 +427,7 @@ func TestSubmitError(t *testing.T) {
 func testCall() *models.Call {
 	appName := "myapp"
 	path := "/sleeper"
-	image := "fnproject/fn-test-utils"
+	image := "fnproject/fn-test-utils:latest"
 	const timeout = 10
 	const idleTimeout = 20
 	const memory = 256
@@ -434,7 +435,7 @@ func testCall() *models.Call {
 	method := "GET"
 	url := "http://127.0.0.1:8080/r/" + appName + path
 	payload := "payload"
-	typ := "async"
+	typ := "sync"
 	format := "http"
 	contentType := "suberb_type"
 	contentLength := strconv.FormatInt(int64(len(payload)), 10)
@@ -497,7 +498,7 @@ func TestPipesAreClear(t *testing.T) {
 	// TODO echo image
 	call := testCall()
 	call.Type = "sync"
-	call.Format = "http"
+	call.Format = "json"
 	call.IdleTimeout = 60 // keep this bad boy alive
 	call.Timeout = 4      // short
 
@@ -530,7 +531,7 @@ func TestPipesAreClear(t *testing.T) {
 
 	// read this body after 5s (after call times out)
 	bodOne := `{"echoContent":"yodawg"}`
-	delayBodyOne := &delayReader{inny: strings.NewReader(bodOne), delay: 5 * time.Second}
+	delayBodyOne := &delayReader{inny: strings.NewReader(bodOne), delay: 1 * time.Second}
 
 	req, err := http.NewRequest("GET", call.URL, delayBodyOne)
 	if err != nil {
@@ -551,6 +552,9 @@ func TestPipesAreClear(t *testing.T) {
 	}
 	t.Log("first guy err:", err)
 
+	io.Copy(os.Stdout, &outOne)
+	io.WriteString(os.Stdout, "\nNEWLINE\n")
+
 	// TODO we need to make sure we got an http parsing error here (and that it's user friendly for fdks?)
 
 	// if we submit the same call to the hot container again,
@@ -560,7 +564,7 @@ func TestPipesAreClear(t *testing.T) {
 
 	// only delay this body 2 seconds, so that we read at 6s (first writes at 5s) before time out
 	bodTwo := `{"echoContent":"NODAWG"}`
-	delayBodyTwo := &delayReader{inny: strings.NewReader(bodTwo), delay: 2 * time.Second}
+	delayBodyTwo := &delayReader{inny: strings.NewReader(bodTwo), delay: 1 * time.Second}
 
 	req, err = http.NewRequest("GET", call.URL, delayBodyTwo)
 	if err != nil {
@@ -582,6 +586,9 @@ func TestPipesAreClear(t *testing.T) {
 		// what really happened
 		t.Error("got error from submit when task should succeed")
 	}
+
+	io.Copy(os.Stdout, &outTwo)
+	io.WriteString(os.Stdout, "\nNEWLINE\n")
 
 	// we're using http format so this will have written a whole http request
 	res, err := http.ReadResponse(bufio.NewReader(&outTwo), nil)
@@ -613,6 +620,6 @@ type delayReader struct {
 }
 
 func (r *delayReader) Read(b []byte) (int, error) {
-	r.once.Do(func() { time.Sleep(r.delay) })
+	//	r.once.Do(func() { time.Sleep(r.delay) })
 	return r.inny.Read(b)
 }

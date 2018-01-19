@@ -5,7 +5,7 @@
   branch = "master"
   name = "github.com/fnproject/fdk-go"
   packages = ["."]
-  revision = "2d62538bfa636d3135c957ec7b78f2bedeeffa3d"
+  revision = "7c1e1a329cf1004edf545318280d672f35e15081"
 
 [solve-meta]
   analyzer-name = "dep"

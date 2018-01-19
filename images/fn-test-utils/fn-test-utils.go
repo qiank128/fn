@@ -1,14 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log"
+	"net/http"
 	"time"
 
 	fdk "github.com/fnproject/fdk-go"
-	"net/http"
 )
 
 type AppRequest struct {
@@ -39,8 +40,11 @@ type AppResponse struct {
 }
 
 func AppHandler(ctx context.Context, in io.Reader, out io.Writer) {
-
 	fnctx := fdk.Context(ctx)
+
+	var b bytes.Buffer
+	io.Copy(&b, in)
+	in = bytes.NewReader(b.Bytes())
 
 	var request AppRequest
 	json.NewDecoder(in).Decode(&request)
@@ -64,18 +68,18 @@ func AppHandler(ctx context.Context, in io.Reader, out io.Writer) {
 		panic("Crash requested")
 	}
 
-	// custom response code
-	if request.ResponseCode != 0 {
-		fdk.WriteStatus(out, request.ResponseCode)
-	} else {
-		fdk.WriteStatus(out, 200)
-	}
-
 	// custom content type
 	if request.ResponseContentType != "" {
 		fdk.SetHeader(out, "Content-Type", request.ResponseContentType)
 	} else {
 		fdk.SetHeader(out, "Content-Type", "application/json")
+	}
+
+	// custom response code
+	if request.ResponseCode != 0 {
+		fdk.WriteStatus(out, request.ResponseCode)
+	} else {
+		fdk.WriteStatus(out, 200)
 	}
 
 	resp := AppResponse{
@@ -84,7 +88,10 @@ func AppHandler(ctx context.Context, in io.Reader, out io.Writer) {
 		Config:  fnctx.Config,
 	}
 
-	json.NewEncoder(out).Encode(&resp)
+	io.Copy(out, &b)
+
+	// json.NewEncoder(out).Encode(&resp)
+	_ = resp
 }
 
 func main() {

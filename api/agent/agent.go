@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -377,6 +376,7 @@ func (a *agent) hotLauncher(ctx context.Context, callObj *call) {
 
 // waitHot pings and waits for a hot container from the slot queue
 func (a *agent) waitHot(ctx context.Context, call *call) (Slot, error) {
+
 	ctxDequeuer, cancelDequeuer := context.WithCancel(ctx)
 	defer cancelDequeuer()
 	ch := call.slots.startDequeuer(ctxDequeuer)
@@ -495,8 +495,9 @@ func (s *coldSlot) Close() error {
 // implements Slot
 type hotSlot struct {
 	done      chan<- struct{} // signal we are done with slot
-	errC      <-chan error    // container error
-	container *container      // TODO mask this
+	proto     protocol.ContainerIO
+	errC      <-chan error // container error
+	container *container   // TODO mask this
 	err       error
 }
 
@@ -521,21 +522,16 @@ func (s *hotSlot) exec(ctx context.Context, call *call) error {
 		call.slots.recordLatency(SlotQueueRunner, uint64(time.Now().Sub(start).Seconds()*1000))
 	}()
 
-	// TODO kill the pipes (?)
-	stdinRead, stdinWrite := io.Pipe()
-	stdoutRead, stdoutWrite := io.Pipe()
-	defer stdinRead.Close()
-	defer stdoutWrite.Close()
-
-	proto := protocol.New(protocol.Protocol(call.Format), stdinWrite, stdoutRead)
-
-	// swap in fresh pipes & stat accumulator to not interlace with other calls that used this slot [and timed out]
-	s.container.swap(stdinRead, stdoutWrite, call.stderr, &call.Stats)
+	// swap in the new stderr logger & stat accumulator
+	oldStderr := s.container.swap(call.stderr, &call.Stats)
+	defer s.container.swap(oldStderr, nil) // once we're done, swap out in this scope to prevent races
 
 	errApp := make(chan error, 1)
 	go func() {
+		// TODO make sure stdin / stdout not blocked if container dies or we leak goroutine
+		// we have to make sure this gets shut down or 2 threads will be reading/writing in/out
 		ci := protocol.NewCallInfo(call.Call, call.req)
-		errApp <- proto.Dispatch(ctx, ci, call.w)
+		errApp <- s.proto.Dispatch(ctx, ci, call.w)
 	}()
 
 	select {
@@ -546,6 +542,8 @@ func (s *hotSlot) exec(ctx context.Context, call *call) error {
 	case <-ctx.Done(): // call timeout
 		return ctx.Err()
 	}
+
+	// TODO we REALLY need to wait for dispatch to return before conceding our slot
 }
 
 func specialHeader(k string) bool {
@@ -596,6 +594,12 @@ func (a *agent) runHot(ctxArg context.Context, call *call, tok ResourceToken) {
 	defer span.Finish()
 	defer tok.Close()
 
+	// TODO we have to make sure we flush these pipes or we will deadlock
+	stdinRead, stdinWrite := io.Pipe()
+	stdoutRead, stdoutWrite := io.Pipe()
+
+	proto := protocol.New(protocol.Protocol(call.Format), stdinWrite, stdoutRead)
+
 	// we don't want to timeout in here. this is inside of a goroutine and the
 	// caller can timeout this Call appropriately. e.g. w/ hot if it takes 20
 	// minutes to pull, then timing out calls for 20 minutes and eventually
@@ -612,16 +616,11 @@ func (a *agent) runHot(ctxArg context.Context, call *call, tok ResourceToken) {
 
 	cid := id.New().String()
 
-	// set up the stderr to capture any logs before the slot is executed and
-	// between hot functions
+	// set up the stderr for the first one to capture any logs before the slot is
+	// executed and between hot functions TODO this is still a little tobias funke
 	stderr := newLineWriter(&logWriter{
 		logrus.WithFields(logrus.Fields{"between_log": true, "app_name": call.AppName, "path": call.Path, "image": call.Image, "container_id": cid}),
 	})
-
-	// between calls we need a reader that doesn't do anything
-	var fakeStdin waitReader
-	stdin := &ghostReader{cond: sync.NewCond(new(sync.Mutex)), inner: &fakeStdin}
-	defer stdin.Close()
 
 	container := &container{
 		id:     cid, // XXX we could just let docker generate ids...
@@ -629,8 +628,8 @@ func (a *agent) runHot(ctxArg context.Context, call *call, tok ResourceToken) {
 		env:    map[string]string(call.Config),
 		memory: call.Memory,
 		cpus:   uint64(call.CPUs),
-		stdin:  stdin,
-		stdout: &ghostWriter{inner: stderr},
+		stdin:  stdinRead,
+		stdout: stdoutWrite,
 		stderr: &ghostWriter{inner: stderr},
 	}
 
@@ -707,9 +706,6 @@ func (a *agent) runHot(ctxArg context.Context, call *call, tok ResourceToken) {
 			// wait for this call to finish
 			// NOTE do NOT select with shutdown / other channels. slot handles this.
 			<-done
-
-			// swap back in our interim readers/writers/stats
-			container.swap(&fakeStdin, stderr, stderr, nil)
 		}
 	}()
 
@@ -717,8 +713,7 @@ func (a *agent) runHot(ctxArg context.Context, call *call, tok ResourceToken) {
 	if err != nil {
 		errC <- err
 	} else if res.Error() != nil {
-		err = res.Error()
-		errC <- err
+		errC <- res.Error()
 	}
 
 	logger.WithError(err).Info("hot function terminated")
@@ -745,15 +740,19 @@ type container struct {
 	stats *drivers.Stats
 }
 
-func (c *container) swap(stdin io.Reader, stdout, stderr io.Writer, cs *drivers.Stats) {
+func (c *container) swap(stderr io.Writer, cs *drivers.Stats) (old io.Writer) {
 	c.Lock()
 	defer c.Unlock()
 
-	// if tests don't catch this, then fuck me
-	c.stdin.(*ghostReader).swap(stdin)
-	c.stdout.(*ghostWriter).swap(stdout)
-	c.stderr.(*ghostWriter).swap(stderr)
+	// TODO meh, maybe shouldn't bury this
+	old = c.stderr
+	gw, ok := c.stderr.(*ghostWriter)
+	if ok {
+		old = gw.swap(stderr)
+	}
+
 	c.stats = cs
+	return old
 }
 
 func (c *container) Id() string                     { return c.id }
@@ -794,8 +793,8 @@ func (c *container) WriteStat(ctx context.Context, stat drivers.Stat) {
 // TODO per call could implement this stored somewhere (vs. configured on host)
 //}
 
-// ghostWriter is an io.Writer who will pass writes to an inner writer
-// that may be changed at will. it is thread safe to swap or write.
+// ghostWriter is a writer who will pass writes to an inner writer
+// (that may be changed at will).
 type ghostWriter struct {
 	sync.Mutex
 	inner io.Writer
@@ -814,61 +813,5 @@ func (g *ghostWriter) Write(b []byte) (int, error) {
 	g.Lock()
 	w := g.inner
 	g.Unlock()
-	//fmt.Printf("WRITE THE BYTES %T %p : %s\n", w, w, string(b))
 	return w.Write(b)
-}
-
-// ghostReader is an io.ReadCloser who will pass reads to an inner reader
-// that may be changed at will. it is thread safe to swap or read.
-// Read will wait for a 'real' reader if inner is of type *waitReader.
-// Close must be called to prevent any pending readers from leaking.
-type ghostReader struct {
-	cond   *sync.Cond
-	inner  io.Reader
-	closed bool
-}
-
-func (g *ghostReader) swap(r io.Reader) {
-	g.cond.L.Lock()
-	fmt.Printf("SWAP READER %p %T %p \n", g, r, r)
-	g.inner = r
-	g.cond.L.Unlock()
-	g.cond.Broadcast()
-}
-
-func (g *ghostReader) Close() {
-	g.cond.L.Lock()
-	g.closed = true
-	g.cond.L.Unlock()
-	g.cond.Broadcast()
-}
-
-func (g *ghostReader) Read(b []byte) (int, error) {
-	// wait for a real reader
-	g.cond.L.Lock()
-	fmt.Printf("READ READER %p %T %p \n", g, g.inner, g.inner)
-	for {
-		if g.closed { // check this first
-			g.cond.L.Unlock()
-			return 0, io.EOF
-		}
-		if _, ok := g.inner.(*waitReader); ok {
-			g.cond.Wait()
-		} else {
-			break
-		}
-	}
-
-	// we don't need to serialize reads but swapping g.inner could be a race if unprotected
-	r := g.inner
-	g.cond.L.Unlock()
-	//fmt.Printf("READ THE BYTES %T %p : %s\n", r, r, string(b))
-	return r.Read(b)
-}
-
-// waitReader returns io.EOF if anyone calls Read. don't call Read, this is a sentinel type
-type waitReader struct{}
-
-func (e *waitReader) Read([]byte) (int, error) {
-	return 0, io.EOF
 }

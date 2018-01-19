@@ -498,7 +498,7 @@ func TestPipesAreClear(t *testing.T) {
 	// TODO echo image
 	call := testCall()
 	call.Type = "sync"
-	call.Format = "json"
+	call.Format = "http"
 	call.IdleTimeout = 60 // keep this bad boy alive
 	call.Timeout = 4      // short
 
@@ -620,6 +620,6 @@ type delayReader struct {
 }
 
 func (r *delayReader) Read(b []byte) (int, error) {
-	//	r.once.Do(func() { time.Sleep(r.delay) })
+	//r.once.Do(func() { time.Sleep(r.delay) })
 	return r.inny.Read(b)
 }

@@ -33,34 +33,30 @@ func (h *HTTPProtocol) Dispatch(ctx context.Context, ci CallInfo, w io.Writer) e
 		return err
 	}
 
+	resp, err := http.ReadResponse(bufio.NewReader(h.out), ci.Request()) // TODO timeout
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
 	if rw, ok := w.(http.ResponseWriter); ok {
 		// if we're writing directly to the response writer, we need to set headers
 		// and status code first since calling res.Write will just write the http
 		// response as the body (headers and all)
 
-		res, err := http.ReadResponse(bufio.NewReader(h.out), ci.Request()) // TODO timeout
-		if err != nil {
-			return err
-		}
-
-		for k, vs := range res.Header {
+		// add resp's on top of any specified on the route [on rw]
+		for k, vs := range resp.Header {
 			for _, v := range vs {
-				rw.Header().Add(k, v) // on top of any specified on the route
+				rw.Header().Add(k, v)
 			}
 		}
-		rw.WriteHeader(res.StatusCode)
-		// TODO should we TCP_CORK ?
-
-		io.Copy(rw, res.Body) // TODO timeout
-		res.Body.Close()
+		resp.Header = rw.Header()
+		rw.WriteHeader(resp.StatusCode)
+		io.Copy(rw, resp.Body)
 	} else {
-		// logs can just copy the full thing in there, headers and all.
+		// async / [some] tests go through here
 
-		res, err := http.ReadResponse(bufio.NewReader(h.out), ci.Request()) // TODO timeout
-		if err != nil {
-			return err
-		}
-		res.Write(w) // TODO timeout
+		resp.Write(w) // TODO timeout
 	}
 
 	return nil
